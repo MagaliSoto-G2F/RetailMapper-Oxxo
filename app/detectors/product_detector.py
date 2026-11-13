@@ -1,71 +1,30 @@
 # app/detectors/product_detector.py
 
-import os
-import cv2
-from typing import Union
 from ultralytics import YOLO
 
 
 class ProductDetector:
     """
-    YOLO-based product detector.
-    Performs inference over a frame and saves cropped product images.
+    Detector de productos basado en YOLO.
     """
 
-    def __init__(
-        self,
-        model_path: str
-    ) -> None:
-        """
-        Initialize the product detector.
-
-        Parameters
-        ----------
-        model_path : str
-            Path to the YOLO model weights.
-            Minimum confidence required to keep a detection.
-        """
+    def __init__(self, model_path: str) -> None:
         self.model = YOLO(model_path)
 
-
-    def detect(
-        self,
-        shelf: Union[int, str],
-        frame,
-        conf_threshold: float = 0.3,
-        output_dir: str = "tmp/products"
-    ) -> list[dict]:
+    def detect(self, frame, conf_threshold: float = 0.3) -> list[dict]:
         """
-        Run product detection on a frame and save cropped images.
+        Ejecuta la detección de productos sobre un frame (array numpy BGR).
 
-        Parameters
-        ----------
-        shelf : Union[int, str]
-            Shelf identifier associated with this detection pass.
-        frame : numpy.ndarray
-            Image frame in BGR format.
-        conf_threshold : float
-        output_dir : str
-            Directory where cropped product images will be stored.
-
-        Returns
+        Retorna
         -------
         list[dict]
-            List of detected products with:
-            - 'bbox' (tuple[int, int, int, int])
-            - 'conf' (float)
-            - 'shelf' (Union[int, str])
-            - 'image_path' (str)
-        """        
-        os.makedirs(output_dir, exist_ok=True)
-
+            Productos detectados con 'bbox' (x1, y1, x2, y2) y 'conf'.
+        """
         results = self.model(frame)
         detections = []
 
         if not results or not hasattr(results[0], "boxes"):
             return detections
-
-        product_id = 0
 
         for det in results[0].boxes:
             conf = float(det.conf[0])
@@ -73,25 +32,6 @@ class ProductDetector:
                 continue
 
             x1, y1, x2, y2 = map(int, det.xyxy[0])
-
-            # Crop product region
-            crop = frame[y1:y2, x1:x2]
-            if crop.size == 0:
-                continue
-
-            product_id += 1
-            img_path = os.path.join(
-                output_dir,
-                f"shelf_{shelf}_product_{product_id}.jpg"
-            )
-
-            cv2.imwrite(img_path, crop)
-
-            detections.append({
-                "bbox": (x1, y1, x2, y2),
-                "conf": conf,
-                "shelf": int(shelf),
-                "image_path": img_path
-            })
+            detections.append({"bbox": (x1, y1, x2, y2), "conf": conf})
 
         return detections

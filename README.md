@@ -1,326 +1,96 @@
 # RetailMapper v.2
 
-**Product detection, shelf localization, planogram auditing and task
-automation as a microservice**
+API REST (FastAPI + Docker) que detecta repisas y productos en una imagen
+de góndola, ubica cada producto por fila y columna y detecta los
+**espacios vacíos en la góndola**.
 
-RetailMapper v.2 is a Dockerized REST API that processes retail shelf
-images and performs full planogram compliance auditing.\
-For every detected product, the system computes spatial location (row,
-column, subrow), visual embeddings, and a semantic label generated via
-OpenAI.
+## Pipeline
 
-In addition, the system can audit real shelf images against a reference
-planogram and generate structured compliance reports, tasks, and scoring
-metrics.
-
-This version is **API-only** and designed to be consumed as a
-microservice in larger retail analytics pipelines.
-
-------------------------------------------------------------------------
-
-## Table of Contents
-
--   [About](#about)
--   [Architecture Overview](#architecture-overview)
--   [Audit Pipeline](#audit-pipeline)
--   [Task Engine](#task-engine)
--   [API Usage](#api-usage)
--   [Docker Setup](#docker-setup)
--   [Configuration](#configuration)
--   [Environment Variables](#environment-variables)
--   [Response Format](#response-format)
--   [JSON Outputs](#json-outputs)
--   [Project Structure](#project-structure)
--   [Performance Considerations](#performance-considerations)
--   [Tests](#tests)
--   [Contact](#contact)
-
-------------------------------------------------------------------------
-
-## About
-
-RetailMapper v.2 receives a shelf image and metadata, then executes a
-full computer vision pipeline:
-
-1.  Detects shelves and products using YOLO-based models\
-2.  Assigns a unique ID to each detected product\
-3.  Computes spatial location:
-    -   `row`
-    -   `col`
-    -   `subrow`
-4.  Extracts **CLIP embeddings** for each product crop\
-5.  Generates a **semantic label in Spanish** using OpenAI (image-based
-    prompting)\
-6.  Aggregates all information into a structured JSON response
-
-The generated output can be used as a **digital reference planogram**.
-
-The system can then audit new shelf images against this reference,
-detecting:
-
--   Missing products\
--   Unexpected products\
--   Misplaced products\
--   Correctly placed products
-
-The service is stateless from the client perspective and communicates
-exclusively via HTTP.
-
-------------------------------------------------------------------------
-
-## Architecture Overview
-
-### Planogram Processing Pipeline
-
-    Input image
+    Imagen de góndola
        ↓
-    Shelf detection
+    Detección de repisas (YOLO)
        ↓
-    Product detection
+    Detección de productos (YOLO)
        ↓
-    ID assignment
+    Asignación de fila / columna
        ↓
-    Row / Column / Subrow localization
+    Detección de espacios vacíos (geométrica)
        ↓
-    CLIP embedding extraction
-       ↓
-    OpenAI-based product labeling
-       ↓
-    products.json + data_groups.json
+    Respuesta JSON (+ imagen anotada en output/)
 
-All steps are executed synchronously inside a single API call.
+Los dos modelos YOLO se descargan desde Hugging Face
+(`MagaliSoto/RetailMapper`) al iniciar la API.
 
-------------------------------------------------------------------------
+## Endpoint
 
-## Audit Pipeline
+**POST `/detect`** — `multipart/form-data` con un campo `image`.
 
-The audit pipeline compares a new shelf image against a previously
-generated planogram.
+``` bash
+curl -X POST http://localhost:8000/detect -F "image=@input_images_test/imgGondola2.jpeg"
+```
 
-    New shelf image
-       ↓
-    Shelf + product detection
-       ↓
-    Spatial localization
-       ↓
-    Matching against reference planogram
-       ↓
-    Classification:
-          - match
-          - missing
-          - unexpected
-          - different_location
-       ↓
-    compare_planogram.json
-       ↓
-    Task Engine
-       ↓
-    tasks.json (final output)
+Respuesta:
 
-The compliance score is calculated as:
+``` json
+{
+  "status": "ok",
+  "shelves_count": 3,
+  "products_count": 22,
+  "empty_spaces_count": 2,
+  "shelves": [{ "bbox": [0, 410, 899, 470], "conf": 0.91 }],
+  "products": [{ "bbox": [57, 209, 181, 417], "conf": 0.89, "row": 3, "col": 1, "id": 1 }],
+  "empty_spaces": [{ "bbox": [0, 800, 225, 1085], "row": 1, "after_col": null, "width_px": 225, "estimated_slots": 2, "id": 1 }],
+  "annotated_image": "output/<uuid>.jpg"
+}
+```
 
-    score = match / total_expected
+- `bbox` es `[x1, y1, x2, y2]` en píxeles.
+- `row` cuenta los niveles de repisa desde abajo (1 = el más bajo).
+- `col` cuenta los productos de izquierda a derecha dentro de cada fila.
+- `empty_spaces`: huecos de cada fila. `after_col` es la columna del producto
+  a la izquierda del hueco (`null` si está en el borde izquierdo o la fila
+  está vacía) y `estimated_slots` es cuántos productos entrarían.
 
-The summary paragraph is generated using GPT.
+## Detección de espacios vacíos
 
-------------------------------------------------------------------------
+Es geométrica, no usa un modelo extra (`app/localization/find_empty_spaces.py`):
 
-## Task Engine
+1. Para cada repisa se toman los intervalos horizontales `[x1, x2]` de sus
+   productos y se unen los que se superponen (productos apilados = un bloque).
+2. Se miden los huecos entre el borde izquierdo de la repisa, cada bloque y
+   el borde derecho.
+3. Un hueco es espacio vacío si su ancho es ≥ `EMPTY_SPACE_MIN_WIDTH_RATIO`
+   × la mediana del ancho de los productos de esa fila.
+4. Una repisa sin productos se reporta completa como espacio vacío.
 
-Located in:
+En la imagen anotada los espacios vacíos se dibujan en rojo.
 
-    app/tasks/
-       ├── task_builder.py
-       ├── task_manager.py
-
-It generates:
-
--   A structured list of corrective tasks\
--   A compliance score\
--   A GPT-generated executive summary
-
-This allows automatic transformation of audit results into actionable
-store-level instructions.
-
-------------------------------------------------------------------------
-
-## API Usage
-
-### Endpoints
-
-**POST `/process`**\
-Generates the reference planogram.
-
-**POST `/audit`**\
-Audits a new image against the reference planogram.
-
-------------------------------------------------------------------------
-
-### Request format
-
-Both endpoints expect `multipart/form-data`:
-
-  Field        Type   Required   Description
-  ------------ ------ ---------- ------------------
-  `image`      File   ✅         Shelf image
-  `n_shelf`    int    ✅         Shelf number
-  `id_store`   int    ✅         Store identifier
-
-Reference JSON files are loaded internally during audit.
-
-------------------------------------------------------------------------
-
-## Docker Setup
-
-### Build the image
+## Docker
 
 ``` bash
 docker build -t retail-mapper-api .
+docker run -p 8000:8000 -v ${PWD}/output:/app/output retail-mapper-api
 ```
 
-### Run the container
+Documentación interactiva: http://localhost:8000/docs
 
-``` bash
-docker run -p 8000:8000 --env-file .env retail-mapper-api
-```
+## Configuración
 
-### Run with output folder
+`app/config.py`: umbrales de confianza de cada detector, sensibilidad de la
+detección de espacios vacíos (`EMPTY_SPACE_MIN_WIDTH_RATIO`) y si se guarda
+la imagen anotada.
 
-``` bash
-mkdir output
-docker run -p 8000:8000 -v ${PWD}/output:/app/output --env-file .env retail-mapper-api
-```
+## Estructura del proyecto
 
-### Run with logs
+    app/
+    ├── main.py                     # App FastAPI, endpoint /detect
+    ├── config.py
+    ├── core/model_loader.py        # Descarga y carga los modelos YOLO una sola vez
+    ├── detectors/                  # Detectores YOLO de repisas y productos
+    ├── localization/               # Asignación de filas/columnas y espacios vacíos
+    ├── services/detection_pipeline.py
+    └── utils/                      # Descarga desde Hugging Face, dibujo
 
-``` bash
-docker run -p 8000:8000 -v ${PWD}/output:/app/output -v ${PWD}/logs:/app/logs --env-file .env retail-mapper-api
-```
+## Contacto
 
-------------------------------------------------------------------------
-
-## Configuration
-
-Main configuration values are defined in `app/config.py`.
-
-------------------------------------------------------------------------
-
-## Environment Variables
-
-The service requires access to OpenAI for:
-
--   Product labeling\
--   Audit summary generation
-
-``` env
-OPENAI_API_KEY=your_api_key_here
-```
-
-------------------------------------------------------------------------
-
-## Response Format
-
-### `/process`
-
-``` json
-{
-  "status": "ok",
-  "count": 1,
-  "products": [
-    {
-      "bbox": [57, 209, 181, 417],
-      "conf": 0.89,
-      "embeddings": [ ... ],
-      "label": "botella de shampoo",
-      "shelf": 1,
-      "row": 3,
-      "col": 1,
-      "subrow": 1,
-      "id": 1
-    }
-  ]
-}
-```
-
-------------------------------------------------------------------------
-
-### `/audit`
-
-``` json
-{
-  "status": "ok",
-  "tasks": [
-    "Shelf 1 - Restock product X",
-    "Shelf 1 - Move product Y to row 2 column 3"
-  ],
-  "score": 0.85,
-  "summary": "The shelf presents high compliance but requires corrective actions."
-}
-```
-
-------------------------------------------------------------------------
-
-## JSON Outputs
-
-During execution the system generates:
-
--   `products.json`\
--   `data_groups.json`\
--   `compare_planogram.json`\
--   `tasks.json`
-
-------------------------------------------------------------------------
-
-## Project Structure
-
-    .
-    ├── Dockerfile
-    ├── requirements.txt
-    ├── .env
-    ├── app/
-    │   ├── main.py
-    │   ├── config.py
-    │   ├── core/
-    │   ├── detectors/
-    │   ├── localization/
-    │   ├── services/
-    │   │    ├── process_planogram_pipeline.py
-    │   │    ├── audit_pipeline.py
-    │   ├── tasks/
-    │   │    ├── task_builder.py
-    │   │    ├── task_manager.py
-    │   ├── utils/
-    │   └── tests/
-    ├── models/
-    ├── output/
-    └── input_images_test/
-
-------------------------------------------------------------------------
-
-## Performance Considerations
-
-The `/audit` endpoint is synchronous and takes approximately **2 minutes
-per request** due to detection, matching, and GPT reasoning.
-
-------------------------------------------------------------------------
-
-## Tests
-
-Tests are internal and intended for development validation.
-
-To run them:
-
-1.  Move the `tests/` folder to the project root\
-2.  Execute:
-
-``` bash
-python tests/test_api.py
-```
-
-------------------------------------------------------------------------
-
-## Contact
-
-**Magali Soto**\
-Software Developer\
-📧 sotomagali265@gmail.com
+**Magali Soto** — sotomagali265@gmail.com

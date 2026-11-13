@@ -1,29 +1,21 @@
 import logging
 import os
-import shutil
 import uuid
-import json
 
-from fastapi import FastAPI, UploadFile, File, Form
+import cv2
+import numpy as np
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 
-from app.services.process_planogram_pipeline import process_image_pipeline
-from app.services.audit_pipline import audit_image_pipeline
+from app.config import OUTPUT_FOLDER, SAVE_ANNOTATED_IMAGE
 from app.core.model_loader import load_models
-from app.utils.json_utils import save_products_to_json, save_groups_to_json
-from app.config import DOWNLOAD_JSON, OUTPUT_FOLDER
+from app.services.detection_pipeline import detect_shelf_image
+from app.utils.draw import draw_shelves, draw_products, draw_empty_spaces
 
 
 def configure_logging():
     log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-
-    log_format = (
-        "%(asctime)s | "
-        "%(levelname)s | "
-        "%(name)s | "
-        "%(funcName)s | "
-        "%(message)s"
-    )
+    log_format = "%(asctime)s | %(levelname)s | %(name)s | %(funcName)s | %(message)s"
 
     logger = logging.getLogger()
     logger.setLevel(log_level)
@@ -38,6 +30,7 @@ def configure_logging():
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
 
+
 configure_logging()
 
 app = FastAPI(title="Retail Mapper API")
@@ -49,100 +42,43 @@ def startup_event():
     load_models()
 
 
-@app.post("/process")
-async def process(
-    image: UploadFile = File(...),
-    n_shelf: int = Form(...),
-    id_store: int = Form(...)
-):
+@app.post("/detect")
+async def detect(image: UploadFile = File(...)):
     try:
-        temp_dir = "tmp"
-        os.makedirs(temp_dir, exist_ok=True)
-
-        img_path = f"{temp_dir}/{uuid.uuid4()}.jpg"
-        with open(img_path, "wb") as f:
-            shutil.copyfileobj(image.file, f)
-
-        products, data_groups = process_image_pipeline(
-            img_path,
-            n_shelf,
-            id_store
-        )
-
-        if DOWNLOAD_JSON:
-            save_products_to_json(
-                products=products,
-                filename="products.json",
-                output_folder=OUTPUT_FOLDER
-            )
-            save_groups_to_json(
-                data_groups=data_groups,
-                filename="data_groups.json",
-                output_folder=OUTPUT_FOLDER
+        data = np.frombuffer(await image.read(), dtype=np.uint8)
+        img = cv2.imdecode(data, cv2.IMREAD_COLOR)
+        if img is None:
+            return JSONResponse(
+                status_code=400,
+                content={"status": "error", "detail": "Invalid image file"}
             )
 
-        return {
+        shelves, products, empty_spaces = detect_shelf_image(img)
+
+        response = {
             "status": "ok",
-            "count": len(products),
-            "products": products
+            "shelves_count": len(shelves),
+            "products_count": len(products),
+            "empty_spaces_count": len(empty_spaces),
+            "shelves": shelves,
+            "products": products,
+            "empty_spaces": empty_spaces,
         }
 
+        if SAVE_ANNOTATED_IMAGE:
+            os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+            annotated = draw_shelves(img.copy(), shelves)
+            annotated = draw_products(annotated, products)
+            annotated = draw_empty_spaces(annotated, empty_spaces)
+            out_path = os.path.join(OUTPUT_FOLDER, f"{uuid.uuid4()}.jpg")
+            cv2.imwrite(out_path, annotated)
+            response["annotated_image"] = out_path
+
+        return response
+
     except Exception as e:
-        logging.getLogger(__name__).exception("Error in /process endpoint")
+        logging.getLogger(__name__).exception("Error in /detect endpoint")
         return JSONResponse(
             status_code=500,
             content={"status": "error", "detail": str(e)}
-        )
-
-
-@app.post("/audit")
-async def audit(
-    image: UploadFile = File(...),
-    n_shelf: int = Form(...),
-    id_store: int = Form(...),
-    planogram_path: str = Form(...),
-    data: str = Form(...)
-):
-    try:
-        temp_dir = "tmp"
-        os.makedirs(temp_dir, exist_ok=True)
-
-        img_path = f"{temp_dir}/{uuid.uuid4()}.jpg"
-        with open(img_path, "wb") as f:
-            shutil.copyfileobj(image.file, f)
-
-        parsed_data = json.loads(data)
-
-        with open("output/data_groups.json", "r", encoding="utf-8") as f:
-            label_ids_dict = json.load(f)
-
-        result_data = audit_image_pipeline(
-            n_shelf=n_shelf,
-            id_store=id_store,
-            img_path=img_path,
-            label_ids_dict=label_ids_dict,
-            planogram_data=parsed_data
-        )
-
-        if DOWNLOAD_JSON:
-            os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-            save_groups_to_json(
-                data_groups=result_data,
-                filename="audit_data.json",
-                output_folder=OUTPUT_FOLDER
-            )
-
-        return {
-            "status": "ok",
-            "products": result_data
-        }
-
-    except Exception as e:
-        logging.getLogger(__name__).exception("Error in /audit endpoint")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "detail": str(e)
-            }
         )

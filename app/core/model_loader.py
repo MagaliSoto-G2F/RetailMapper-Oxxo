@@ -6,6 +6,7 @@ from threading import Lock
 from app.detectors.shelf_detector import ShelfDetector
 from app.detectors.product_detector import ProductDetector
 from app.utils.hf_utils import download_model
+from app.config import SHELF_CONF_THRESHOLD
 
 
 _shelf_detector = None
@@ -18,20 +19,20 @@ def _ensure_model_in_local_folder(
     local_path: str
 ) -> str:
     """
-    Ensure the model file exists in the target local path.
-    If missing, copy it from the HuggingFace cache location.
+    Asegura que el archivo del modelo exista en la ruta local destino.
+    Si no existe, lo copia desde la caché de Hugging Face.
 
-    Parameters
+    Parámetros
     ----------
     cached_path : str
-        Path returned by HuggingFace cache download.
+        Ruta devuelta por la descarga en caché de Hugging Face.
     local_path : str
-        Desired local destination path for the model.
+        Ruta local donde se quiere guardar el modelo.
 
-    Returns
+    Retorna
     -------
     str
-        Final local path where the model is stored.
+        Ruta local final donde quedó guardado el modelo.
     """
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
@@ -43,13 +44,13 @@ def _ensure_model_in_local_folder(
 
 def load_models() -> tuple[ShelfDetector, ProductDetector]:
     """
-    Load shelf and product detection models (singleton pattern).
-    Models are downloaded if necessary and initialized once.
+    Carga los modelos de detección de repisas y productos (patrón singleton).
+    Los modelos se descargan si hace falta y se inicializan una sola vez.
 
-    Returns
+    Retorna
     -------
     tuple[ShelfDetector, ProductDetector]
-        Initialized shelf and product detector instances.
+        Instancias inicializadas de los detectores de repisas y productos.
     """
     global _shelf_detector, _product_detector
 
@@ -67,7 +68,7 @@ def load_models() -> tuple[ShelfDetector, ProductDetector]:
                 "models/shelf-model.pt"
             )
 
-            _shelf_detector = ShelfDetector(final_shelf_path)
+            _shelf_detector = ShelfDetector(final_shelf_path, SHELF_CONF_THRESHOLD)
 
         if _product_detector is None:
             cached_product_path = download_model(
@@ -88,17 +89,17 @@ def load_models() -> tuple[ShelfDetector, ProductDetector]:
 
 def get_models() -> tuple[ShelfDetector, ProductDetector]:
     """
-    Retrieve previously loaded model instances.
+    Devuelve las instancias de los modelos ya cargados.
 
-    Returns
+    Retorna
     -------
     tuple[ShelfDetector, ProductDetector]
-        Shelf and product detector instances.
+        Instancias de los detectores de repisas y productos.
 
-    Raises
-    ------
+    Lanza
+    -----
     RuntimeError
-        If models were not loaded before calling this function.
+        Si los modelos no se cargaron antes de llamar a esta función.
     """
     if _shelf_detector is None or _product_detector is None:
         raise RuntimeError("Models not loaded. Did startup run?")

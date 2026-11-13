@@ -14,34 +14,34 @@ def download_model(
     local_path: str
 ) -> str:
     """
-    Download a model file from Hugging Face Hub if not already available locally.
+    Descarga un archivo de modelo desde Hugging Face Hub si no está disponible localmente.
 
-    If the repository is private, authentication will be attempted using
-    the HUGGINGFACE_HUB_TOKEN environment variable.
+    Si el repositorio es privado, se intenta autenticar usando la
+    variable de entorno HUGGINGFACE_HUB_TOKEN.
 
-    Parameters
+    Parámetros
     ----------
     repo_id : str
-        Hugging Face repository ID (e.g., "org/model-name").
+        ID del repositorio en Hugging Face (ej.: "org/model-name").
     filename : str
-        File name inside the repository.
+        Nombre del archivo dentro del repositorio.
     local_path : str
-        Expected local path for the downloaded file.
+        Ruta local esperada para el archivo descargado.
 
-    Returns
+    Retorna
     -------
     str
-        Path to the downloaded (or existing) model file.
+        Ruta al archivo del modelo descargado (o ya existente).
 
-    Raises
-    ------
+    Lanza
+    -----
     ValueError
-        If required parameters are invalid.
+        Si los parámetros requeridos no son válidos.
     RuntimeError
-        If download fails.
+        Si la descarga falla.
     """
 
-    # ---- Parameter validation ----
+    # ---- Validación de parámetros ----
     if not repo_id or not isinstance(repo_id, str):
         raise ValueError("repo_id must be a non-empty string.")
 
@@ -53,7 +53,7 @@ def download_model(
 
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
 
-    # ---- Skip download if file already exists ----
+    # ---- Omitir la descarga si el archivo ya existe ----
     if os.path.exists(local_path):
         logger.info(
             "Model already available locally",
@@ -63,7 +63,7 @@ def download_model(
 
     hf_token: Optional[str] = os.getenv("HUGGINGFACE_HUB_TOKEN")
 
-    # ---- Authenticate if token is available ----
+    # ---- Autenticar si hay token disponible ----
     if hf_token:
         try:
             login(token=hf_token)

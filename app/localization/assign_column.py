@@ -9,31 +9,31 @@ def assign_columns(
     debug: bool = False
 ) -> List[Dict]:
     """
-    Assign column numbers to products within each shelf row.
-    Products that overlap horizontally are grouped into the same column.
+    Asigna un número de columna a los productos dentro de cada fila de la repisa.
+    Los productos que se superponen horizontalmente se agrupan en la misma columna.
 
-    Parameters
+    Parámetros
     ----------
     products : List[Dict]
-        List of product detections containing:
+        Lista de detecciones de productos que contienen:
         - 'bbox' (tuple[int, int, int, int])
         - 'row' (int)
     x_overlap_threshold : float
-        Minimum horizontal overlap ratio (0–1) to consider
-        two products in the same column.
+        Proporción mínima de superposición horizontal (0–1) para considerar
+        que dos productos están en la misma columna.
     debug : bool
-        If True, prints detailed grouping information.
+        Si es True, imprime información detallada de la agrupación.
 
-    Returns
+    Retorna
     -------
     List[Dict]
-        Updated list of products with:
-        - 'col' (int) assigned per row.
+        Lista de productos actualizada con:
+        - 'col' (int) asignada por fila.
     """
     if not products:
         return products
 
-    # Group products by row
+    # Agrupar productos por fila
     rows: Dict[int, List[Dict]] = {}
     for p in products:
         row = p.get("row", 0)
@@ -41,7 +41,7 @@ def assign_columns(
 
     for row, items in rows.items():
 
-        # Sort products from left to right by center X
+        # Ordenar productos de izquierda a derecha según el centro en X
         items_sorted = sorted(
             items,
             key=lambda p: (p["bbox"][0] + p["bbox"][2]) / 2
@@ -60,12 +60,12 @@ def assign_columns(
             if prev_box is not None:
                 x1_prev, y1_prev, x2_prev, y2_prev = prev_box
 
-                # Compute horizontal overlap ratio
+                # Calcular la proporción de superposición horizontal
                 overlap_x = max(0, min(x2, x2_prev) - max(x1, x1_prev))
                 min_width = min(width, x2_prev - x1_prev)
                 x_overlap_ratio = overlap_x / min_width if min_width > 0 else 0
 
-                # If overlap is below threshold → new column
+                # Si la superposición está por debajo del umbral → nueva columna
                 if x_overlap_ratio < x_overlap_threshold:
                     col_idx += 1
 

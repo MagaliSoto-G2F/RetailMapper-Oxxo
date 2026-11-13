@@ -6,27 +6,27 @@ def assign_rows(
          debug=False
     )-> list[dict]:
     """
-    Assign each product to the shelf row directly below it.
-    Rows are numbered from bottom (1) to top (N).
+    Asigna cada producto a la fila de la repisa que tiene directamente debajo.
+    Las filas se numeran de abajo (1) hacia arriba (N).
 
-    Parameters
+    Parámetros
     ----------
     products : list[dict]
-        List of product detections with 'bbox'.
+        Lista de detecciones de productos con 'bbox'.
     shelves : list[dict]
-        List of shelf detections with 'bbox'.
+        Lista de detecciones de repisas con 'bbox'.
     debug : bool
-        If True, prints detailed information about the row assignment process.
+        Si es True, imprime información detallada del proceso de asignación.
 
-    Returns
+    Retorna
     -------
     list[dict]
-        Updated list of products with 'row' assigned.
+        Lista de productos actualizada con 'row' asignada.
     """
     if not shelves or not products:
         return products
 
-    # Sort shelves by bottom Y coordinate (descending = bottom first)
+    # Ordenar repisas por la coordenada Y inferior (descendente = de abajo hacia arriba)
     shelves_sorted = sorted(shelves, key=lambda s: s["bbox"][3], reverse=True)
 
     if debug:
@@ -37,23 +37,23 @@ def assign_rows(
         center_y = (y1 + y2) / 2
         row_assigned = None
 
-        # Find the shelf directly below the product
+        # Buscar la repisa que está directamente debajo del producto
         for i, shelf in enumerate(shelves_sorted):
-            shelf_top = shelf["bbox"][1]  # top Y of the shelf
-            shelf_bottom = shelf["bbox"][3]  # bottom Y of the shelf
+            shelf_top = shelf["bbox"][1]  # Y superior de la repisa
+            shelf_bottom = shelf["bbox"][3]  # Y inferior de la repisa
             if shelf_bottom >= center_y >= shelf_top:
-                # Product is within the shelf → assign corresponding row
+                # El producto está dentro de la repisa → se asigna esa fila
                 row_assigned = i + 1
                 break
             elif center_y < shelf_top:
-                # Product is above this shelf, keep looking higher
+                # El producto está por encima de esta repisa, seguir buscando más arriba
                 continue
             elif center_y > shelf_bottom:
-                # Product is above this shelf → this is the row below
+                # El producto está por debajo de esta repisa → se asigna esta fila
                 row_assigned = i + 1
                 break
 
-        # If the product is above the highest shelf
+        # Si el producto está por encima de la repisa más alta
         if row_assigned is None:
             row_assigned = len(shelves_sorted)
 
