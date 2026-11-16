@@ -105,6 +105,84 @@ de los candidatos y tiempo de post-proceso por imagen), una `<imagen>_eval.jpg`
 por imagen con los huecos confirmados en rojo y los descartados en naranja con
 su motivo, y `summary.json` con los números.
 
+## Alternativa: detectar el hueco con un modelo
+
+Otra forma de encontrar faltantes, basada en el
+[artículo de Roboflow](https://roboflow.com/blog/retail-store-object-detection):
+en lugar de detectar productos y deducir los huecos por geometría, se usa un
+modelo entrenado para detectar **directamente el espacio vacío**.
+
+| | Pipeline actual | Modelo de huecos |
+|---|---|---|
+| Modelos | 2 (repisas + productos) | 1 (huecos) |
+| Post-proceso | filas, columnas, candidatos, verificación por textura y parantes | ninguno |
+| Tiempo por imagen (CPU) | 0,52–0,85 s | 0,15–0,25 s (≈ 3× más rápido) |
+| Qué devuelve | hueco con fila, columna y cuántos productos entran | solo la caja del hueco |
+| Ajuste a una góndola nueva | umbrales | reentrenar con imágenes etiquetadas |
+
+Además de los huecos, el artículo clasifica la góndola según cuánta área de
+la imagen cubren: 0 detecciones = STOCKED, < 20 % = PARTIALLY STOCKED,
+≥ 20 % = EMPTY.
+
+### Probarlo
+
+La herramienta `tools/roboflow_empty_shelf.py` corre el modelo, lo compara
+con el pipeline actual y no modifica el pipeline. Acepta tres orígenes de
+modelo:
+
+``` bash
+# 1. Modelo YOLO local. Probado con el modelo público de Hugging Face
+#    akul-29/Retail-Shelf-Gap-Detection_Model (YOLOv8, 2095 imágenes de góndolas)
+python -m tools.roboflow_empty_shelf --backend yolo --weights best.pt --confidence 0.25
+
+# 2. Modelo hospedado en Roboflow (p. ej. un fork entrenado de
+#    policenta/empty-shelf-detection, como en el artículo)
+set ROBOFLOW_API_KEY=...
+python -m tools.roboflow_empty_shelf --model-id <proyecto>/<versión>
+
+# 3. Pesos RF-DETR locales, descargados después de entrenar en Roboflow
+#    (pip install rfdetr)
+python -m tools.roboflow_empty_shelf --backend rfdetr --weights checkpoint_best_total.pth
+```
+
+Los pesos `.pt` de terceros son un pickle, y cargarlos con `YOLO(...)`
+ejecutaría cualquier código que traigan. Por eso el backend `yolo` los lee
+con `torch.load(weights_only=True)`, que solo acepta las clases de torch y
+ultralytics de una red de detección, y copia los pesos a un modelo armado
+desde cero.
+
+En `--out` (por defecto `output/roboflow_compare`) quedan:
+- una `<imagen>_compare.jpg`, con el pipeline actual a la izquierda y el
+  modelo a la derecha;
+- `comparison.json`, con el estado, la cobertura y qué huecos detectaron
+  los dos o solo uno;
+- las respuestas crudas en `predictions/`. Funcionan como caché: al volver a
+  correr no se llama otra vez al modelo; `--no-cache` lo fuerza.
+
+### Resultados con las imágenes de prueba
+
+Con el modelo de Hugging Face (`--confidence 0.25`):
+
+| Imagen | Pipeline actual | Modelo de huecos |
+|---|---|---|
+| imgGondola1 | 1 hueco real ✔ | 0 (no lo ve) |
+| imgGondola2 | 2 huecos reales ✔ | 3: coincide en 1; no ve el hueco grande y marca 2 rendijas entre productos |
+| imgGondola3 | 0 ✔ | 2 rendijas entre frascos |
+| imgGondola4 | 0 ✔ | 1 rendija |
+| img2 (súper) | 1 falso (poste) | 1 hueco oscuro real ✔ |
+| img3 | 0 ✔ | 0 ✔ |
+
+El modelo es más rápido y más simple, pero hoy acierta menos en nuestras
+góndolas. Se entrenó con góndolas de supermercado llenas: detecta bien los
+huecos angostos y oscuros entre productos (img2), pero no los espacios
+grandes con la pared de fondo. Por la misma razón, la regla de cobertura da
+siempre < 2 % con estas fotos.
+
+Para que esta forma reemplace al pipeline habría que reentrenar el modelo
+con fotos propias de góndolas etiquetadas, ya sea en Roboflow o con
+ultralytics. Mientras tanto sirve como segunda opinión en góndolas densas,
+donde el pipeline actual tiene más falsos positivos.
+
 ## Monitoreo desde un stream de video
 
 Además de la API por imagen, se puede monitorear una góndola desde una cámara
