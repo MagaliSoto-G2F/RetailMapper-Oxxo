@@ -20,7 +20,9 @@ class ProductDetector:
         list[dict]
             Productos detectados con 'bbox' (x1, y1, x2, y2) y 'conf'.
         """
-        results = self.model(frame)
+        # Pasar el umbral a YOLO: por defecto descarta todo lo que está por
+        # debajo de 0.25 antes de que lleguemos a filtrar
+        results = self.model(frame, conf=conf_threshold, verbose=False)
         detections = []
 
         if not results or not hasattr(results[0], "boxes"):

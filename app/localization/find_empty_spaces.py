@@ -25,17 +25,26 @@ def find_empty_spaces(
     debug: bool = False
 ) -> List[Dict]:
     """
-    Detecta espacios vacíos en cada fila de la góndola de forma geométrica.
+    Propone espacios vacíos candidatos en cada fila de la góndola de forma
+    geométrica. Los candidatos se deben confirmar después con
+    `verify_empty_spaces`, porque un producto no detectado también deja un hueco.
 
     Para cada repisa (fila) se toman los intervalos horizontales ocupados por
     sus productos y se buscan los huecos:
-    - entre el borde izquierdo de la repisa y el primer producto,
+    - entre el borde izquierdo de la góndola y el primer producto,
     - entre productos consecutivos,
-    - entre el último producto y el borde derecho de la repisa.
-    Un hueco se considera espacio vacío si su ancho es al menos
-    `min_width_ratio` veces el ancho de referencia (mediana del ancho de los
-    productos de la fila o, si la fila está vacía, de toda la imagen).
-    Una repisa sin productos se reporta completa como espacio vacío.
+    - entre el último producto y el borde derecho de la góndola.
+
+    Los bordes de la góndola se estiman como el x mínimo / máximo de los
+    productos de todas las filas: la bbox de la repisa suele extenderse sobre
+    los parantes, la pared o la góndola vecina y generaba huecos falsos.
+
+    Un hueco se considera candidato si su ancho es al menos `min_width_ratio`
+    veces el ancho de referencia (mediana del ancho de los productos de la fila
+    o, si la fila está vacía, de toda la imagen).
+    Una repisa sin productos se reporta completa como candidato.
+    Los niveles cortados por el borde de la imagen (altura < 40% de la mediana)
+    se ignoran.
 
     Parámetros
     ----------
@@ -51,9 +60,9 @@ def find_empty_spaces(
     Retorna
     -------
     List[Dict]
-        Espacios vacíos con:
-        - 'id' (int)
-        - 'bbox' (x1, y1, x2, y2)
+        Espacios vacíos candidatos con:
+        - 'bbox' (x1, y1, x2, y2): en vertical cubre la franja donde se apoyan
+          los productos de la fila (no la repisa entera)
         - 'row' (int)
         - 'after_col' (int | None): columna del producto a la izquierda del
           hueco (None si el hueco está en el borde izquierdo o la fila está vacía)
@@ -69,22 +78,46 @@ def find_empty_spaces(
     all_widths = [p["bbox"][2] - p["bbox"][0] for p in products]
     global_ref_width: Optional[float] = median(all_widths) if all_widths else None
 
+    # Límites horizontales de la góndola según los productos de todas las filas
+    gondola_x1 = min((p["bbox"][0] for p in products), default=None)
+    gondola_x2 = max((p["bbox"][2] for p in products), default=None)
+
+    # Niveles cortados por el borde de la imagen (mucho más bajos que el
+    # resto): no se ve lo suficiente para juzgar si falta algo
+    median_height = median(s["bbox"][3] - s["bbox"][1] for s in shelves_sorted)
+
     empty_spaces: List[Dict] = []
 
     for row_idx, shelf in enumerate(shelves_sorted, start=1):
         sx1, sy1, sx2, sy2 = map(int, shelf["bbox"])
+        if sy2 - sy1 < 0.4 * median_height:
+            if debug:
+                print(f"\n[find_empty_spaces] Row {row_idx}: partially visible, skipped")
+            continue
         row_products = [p for p in products if p.get("row") == row_idx]
 
-        # Repisa sin productos → toda la repisa es espacio vacío
+        # Recortar la fila a los límites de la góndola
+        rx1 = max(sx1, gondola_x1) if gondola_x1 is not None else sx1
+        rx2 = min(sx2, gondola_x2) if gondola_x2 is not None else sx2
+
+        # Repisa sin productos → toda la repisa es candidato
         if not row_products:
-            width = sx2 - sx1
+            width = rx2 - rx1
+            if width <= 0:
+                continue
             slots = int(width // global_ref_width) if global_ref_width else None
             empty_spaces.append({
-                "bbox": (sx1, sy1, sx2, sy2),
+                "bbox": (rx1, sy1, rx2, sy2),
                 "row": row_idx,
                 "after_col": None,
                 "width_px": width,
                 "estimated_slots": slots,
+                # Datos internos para verify_empty_spaces
+                "_open_left": True,
+                "_open_right": True,
+                "_ref_width": global_ref_width,
+                "_min_gap": (global_ref_width or 0) * min_width_ratio,
+                "_neighbor_width": global_ref_width or 0,
             })
             if debug:
                 print(f"\n[find_empty_spaces] Row {row_idx}: empty shelf")
@@ -93,16 +126,22 @@ def find_empty_spaces(
         ref_width = median(p["bbox"][2] - p["bbox"][0] for p in row_products)
         min_gap = ref_width * min_width_ratio
 
+        # Franja vertical donde están los productos de esta fila
+        band_y1 = max(sy1, int(min(p["bbox"][1] for p in row_products)))
+        band_y2 = min(sy2, int(median(p["bbox"][3] for p in row_products)))
+        if band_y2 <= band_y1:
+            band_y1, band_y2 = sy1, sy2
+
         occupied = _merge_intervals([(p["bbox"][0], p["bbox"][2]) for p in row_products])
 
         if debug:
             print(
                 f"\n[find_empty_spaces] Row {row_idx}: ref_width={ref_width:.1f} "
-                f"min_gap={min_gap:.1f} occupied={occupied}"
+                f"min_gap={min_gap:.1f} x=[{rx1}, {rx2}] occupied={occupied}"
             )
 
-        # Bordes de los huecos candidatos: [borde repisa, bloques..., borde repisa]
-        boundaries = [(sx1, sx1)] + occupied + [(sx2, sx2)]
+        # Bordes de los huecos candidatos: [borde góndola, bloques..., borde góndola]
+        boundaries = [(rx1, rx1)] + occupied + [(rx2, rx2)]
 
         for (_, gap_x1), (gap_x2, _) in zip(boundaries, boundaries[1:]):
             width = gap_x2 - gap_x1
@@ -113,18 +152,30 @@ def find_empty_spaces(
             left_cols = [p["col"] for p in row_products if p["bbox"][2] <= gap_x1 and "col" in p]
             after_col = max(left_cols) if left_cols else None
 
+            # Ancho de los productos pegados al hueco: lo más probable es que
+            # falte uno de esos, así que el hueco tiene que poder alojarlo
+            neighbor_widths = [
+                p["bbox"][2] - p["bbox"][0] for p in row_products
+                if p["bbox"][2] == gap_x1 or p["bbox"][0] == gap_x2
+            ]
+            neighbor_width = min(neighbor_widths) if neighbor_widths else ref_width
+
             empty_spaces.append({
-                "bbox": (gap_x1, sy1, gap_x2, sy2),
+                "bbox": (gap_x1, band_y1, gap_x2, band_y2),
                 "row": row_idx,
                 "after_col": after_col,
                 "width_px": width,
                 "estimated_slots": max(1, int(width // ref_width)),
+                # Datos internos para verify_empty_spaces: si el hueco toca
+                # el borde de la fila (no hay producto de ese lado)
+                "_open_left": gap_x1 == rx1,
+                "_open_right": gap_x2 == rx2,
+                "_ref_width": ref_width,
+                "_min_gap": min_gap,
+                "_neighbor_width": neighbor_width,
             })
 
             if debug:
                 print(f" - Gap x={gap_x1}-{gap_x2} width={width} after_col={after_col}")
-
-    for i, space in enumerate(empty_spaces, start=1):
-        space["id"] = i
 
     return empty_spaces
